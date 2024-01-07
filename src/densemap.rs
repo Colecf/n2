@@ -50,6 +50,10 @@ impl<K: Index, V> DenseMap<K, V> {
         self.vec.push(val);
         id
     }
+
+    pub fn values(&self) -> impl Iterator<Item = &V> + '_ {
+        self.vec.iter()
+    }
 }
 
 impl<K: Index, V: Clone> DenseMap<K, V> {

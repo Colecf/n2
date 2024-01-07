@@ -162,6 +162,11 @@ pub struct Build {
     // Struct that contains the path to the rsp file and its contents, if any.
     pub rspfile: Option<RspFile>,
 
+    // The rule that this build uses. This is only filled out if requested
+    // by the loader's Options. It's only needed for certain tools, not a
+    // regular build.
+    pub rule: Option<String>,
+
     /// Pool to execute this build in, if any.
     pub pool: Option<String>,
 
@@ -182,6 +187,7 @@ impl Build {
             depfile: None,
             parse_showincludes: false,
             rspfile: None,
+            rule: None,
             pool: None,
             ins,
             discovered_ins: Vec::new(),

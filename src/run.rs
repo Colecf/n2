@@ -1,7 +1,7 @@
 use crate::{
     load,
     progress::{DumbConsoleProgress, FancyConsoleProgress, Progress},
-    terminal, trace, work,
+    terminal, tools, trace, work,
 };
 use anyhow::anyhow;
 use std::path::Path;
@@ -21,7 +21,7 @@ fn build(
         &mut dumb_console
     };
 
-    let mut state = trace::scope("load::read", || load::read(&build_filename))?;
+    let mut state = trace::scope("load::read", || load::read(&build_filename, load::Options::default()))?;
     let mut work = work::Work::new(
         state.graph,
         state.hashes,
@@ -48,7 +48,7 @@ fn build(
             Some(n) => {
                 // Regenerated build.ninja; start over.
                 tasks_finished = n;
-                state = trace::scope("load::read", || load::read(&build_filename))?;
+                state = trace::scope("load::read", || load::read(&build_filename, load::Options::default()))?;
                 work = work::Work::new(
                     state.graph,
                     state.hashes,
@@ -190,7 +190,8 @@ fn run_impl() -> anyhow::Result<i32> {
         match tool.as_str() {
             "list" => {
                 println!("subcommands:");
-                println!("  (none yet, but see README if you're looking here trying to get CMake to work)");
+                println!("  targets  list targets by their rule or depth in the DAG");
+                println!("  (see the README if you're looking here trying to get CMake to work)");
                 return Ok(1);
             }
             "compdb" if fake_ninja_compat => {
@@ -207,6 +208,7 @@ fn run_impl() -> anyhow::Result<i32> {
                 // on.
                 options.adopt = true;
             }
+            "targets" => return tools::tool_targets(&args.build_file, &args.targets),
             _ => {
                 anyhow::bail!("unknown -t {:?}, use -t list to list", tool);
             }

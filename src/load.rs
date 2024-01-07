@@ -44,9 +44,18 @@ impl<'a> eval::Env for BuildImplicitVars<'a> {
     }
 }
 
+#[derive(Default, Clone)]
+pub struct Options {
+    // Record the name of the rule in the Build structs. Normally the rule used
+    // is discarded, as all of its variables are expanded and stored in the
+    // Build instead.
+    pub record_rule_in_builds: bool,
+}
+
 /// Internal state used while loading.
 #[derive(Default)]
 pub struct Loader {
+    options: Options,
     graph: graph::Graph,
     default: Vec<FileId>,
     /// rule name -> list of (key, val)
@@ -67,9 +76,10 @@ impl parse::Loader for Loader {
 }
 
 impl Loader {
-    pub fn new() -> Self {
+    pub fn new(options: Options) -> Self {
         let mut loader = Loader::default();
 
+        loader.options = options;
         loader.rules.insert("phony".to_owned(), SmallMap::default());
 
         loader
@@ -160,6 +170,9 @@ impl Loader {
             _ => bail!("rspfile and rspfile_content need to be both specified"),
         };
 
+        if self.options.record_rule_in_builds {
+            build.rule = Some(b.rule.to_owned());
+        }
         build.cmdline = cmdline;
         build.desc = desc;
         build.depfile = depfile;
@@ -245,8 +258,8 @@ pub struct State {
 }
 
 /// Load build.ninja/.n2_db and return the loaded build graph and state.
-pub fn read(build_filename: &str) -> anyhow::Result<State> {
-    let mut loader = Loader::new();
+pub fn read(build_filename: &str, options: Options) -> anyhow::Result<State> {
+    let mut loader = Loader::new(options);
     trace::scope("loader.read_file", || {
         let id = loader
             .graph
@@ -279,7 +292,7 @@ pub fn read(build_filename: &str) -> anyhow::Result<State> {
 #[cfg(test)]
 pub fn parse(name: &str, mut content: Vec<u8>) -> anyhow::Result<graph::Graph> {
     content.push(0);
-    let mut loader = Loader::new();
+    let mut loader = Loader::new(Options::default());
     trace::scope("loader.read_file", || {
         loader.parse(PathBuf::from(name), &content)
     })?;
