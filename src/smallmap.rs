@@ -6,6 +6,7 @@ use std::borrow::Borrow;
 
 /// A map-like object implemented as a list of pairs, for cases where the
 /// number of entries in the map is small.
+#[derive(Debug)]
 pub struct SmallMap<K, V>(Vec<(K, V)>);
 
 impl<K, V> Default for SmallMap<K, V> {
@@ -48,5 +49,12 @@ impl<K: PartialEq, V> SmallMap<K, V> {
 
     pub fn into_iter(self) -> std::vec::IntoIter<(K, V)> {
         self.0.into_iter()
+    }
+}
+
+// TODO: Make this not order-sensitive
+impl<K: PartialEq, V: PartialEq> PartialEq for SmallMap<K, V> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
     }
 }
