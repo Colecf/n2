@@ -9,4 +9,5 @@ fn main() {
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
+    println!("End of main")
 }

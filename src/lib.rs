@@ -24,9 +24,9 @@ mod terminal;
 mod trace;
 mod work;
 
-#[cfg(not(any(windows, target_arch = "wasm32")))]
-use jemallocator::Jemalloc;
+// #[cfg(not(any(windows, target_arch = "wasm32")))]
+// use jemallocator::Jemalloc;
 
-#[cfg(not(any(windows, target_arch = "wasm32")))]
-#[global_allocator]
-static GLOBAL: Jemalloc = Jemalloc;
+// #[cfg(not(any(windows, target_arch = "wasm32")))]
+// #[global_allocator]
+// static GLOBAL: Jemalloc = Jemalloc;

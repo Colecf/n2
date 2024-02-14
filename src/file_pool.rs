@@ -1,15 +1,14 @@
 use anyhow::bail;
-use core::slice;
 use libc::{
     c_void, mmap, munmap, strerror, sysconf, MAP_ANONYMOUS, MAP_FAILED, MAP_FIXED, MAP_PRIVATE,
     PROT_READ, PROT_WRITE, _SC_PAGESIZE,
 };
+use core::slice;
 use std::{
-    os::fd::{AsFd, AsRawFd},
-    path::Path,
-    ptr::null_mut,
-    sync::Mutex,
+    cell::UnsafeCell, os::fd::{AsFd, AsRawFd}, path::Path, ptr::null_mut, sync::Mutex
 };
+
+use crate::scanner;
 
 /// FilePool is a datastucture that is intended to hold onto byte buffers and give out immutable
 /// references to them. But it can also accept new byte buffers while old ones are still lent out.
@@ -77,6 +76,27 @@ impl Drop for FilePool {
             unsafe {
                 munmap(addr, len);
             }
+        }
+    }
+}
+
+
+pub struct FilePoolNoMmap {
+    files: Mutex<UnsafeCell<Vec<Vec<u8>>>>,
+}
+impl FilePoolNoMmap {
+    pub fn new() -> FilePoolNoMmap {
+        FilePoolNoMmap {
+            files: Mutex::new(UnsafeCell::new(Vec::new())),
+        }
+    }
+
+    pub fn read_file(&self, path: &Path) -> anyhow::Result<&[u8]> {
+        let file = scanner::read_file_with_nul(path)?;
+        let files = self.files.lock().unwrap().get();
+        unsafe {
+            (*files).push(file);
+            Ok((*files).last().unwrap().as_slice())
         }
     }
 }

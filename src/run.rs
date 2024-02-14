@@ -12,90 +12,91 @@ fn build(
     targets: Vec<String>,
     verbose: bool,
 ) -> anyhow::Result<Option<usize>> {
-    let (mut dumb_console, mut fancy_console);
-    let progress: &mut dyn Progress = if terminal::use_fancy() {
-        fancy_console = FancyConsoleProgress::new(verbose);
-        &mut fancy_console
-    } else {
-        dumb_console = DumbConsoleProgress::new(verbose);
-        &mut dumb_console
-    };
+    // let (mut dumb_console, mut fancy_console);
+    // let progress: &mut dyn Progress = if terminal::use_fancy() {
+    //     fancy_console = FancyConsoleProgress::new(verbose);
+    //     &mut fancy_console
+    // } else {
+    //     dumb_console = DumbConsoleProgress::new(verbose);
+    //     &mut dumb_console
+    // };
 
-    let mut state = trace::scope("load::read", || load::read(&build_filename))?;
-    let mut work = work::Work::new(
-        state.graph,
-        state.hashes,
-        state.db,
-        &options,
-        progress,
-        state.pools,
-    );
+    load::read(&build_filename);
+    // let mut work = work::Work::new(
+    //     state.graph,
+    //     state.hashes,
+    //     state.db,
+    //     &options,
+    //     progress,
+    //     state.pools,
+    // );
 
-    let mut tasks_finished = 0;
+    // let mut tasks_finished = 0;
 
-    // Attempt to rebuild build.ninja.
-    let mut build_file_target = work.lookup(&build_filename);
-    if let Some(target) = build_file_target.clone() {
-        work.want_file(target)?;
-        match trace::scope("work.run", || work.run())? {
-            None => return Ok(None),
-            Some(0) => {
-                // build.ninja already up to date.
-                // TODO: this logic is not right in the case where a build has
-                // a step that doesn't touch build.ninja.  We should instead
-                // verify the specific FileId was updated.
-            }
-            Some(n) => {
-                // Regenerated build.ninja; start over.
-                tasks_finished = n;
-                state = trace::scope("load::read", || load::read(&build_filename))?;
-                work = work::Work::new(
-                    state.graph,
-                    state.hashes,
-                    state.db,
-                    &options,
-                    progress,
-                    state.pools,
-                );
-                build_file_target = work.lookup(&build_filename);
-            }
-        }
-    }
+    // // Attempt to rebuild build.ninja.
+    // let mut build_file_target = work.lookup(&build_filename);
+    // if let Some(target) = build_file_target.clone() {
+    //     work.want_file(target)?;
+    //     match trace::scope("work.run", || work.run())? {
+    //         None => return Ok(None),
+    //         Some(0) => {
+    //             // build.ninja already up to date.
+    //             // TODO: this logic is not right in the case where a build has
+    //             // a step that doesn't touch build.ninja.  We should instead
+    //             // verify the specific FileId was updated.
+    //         }
+    //         Some(n) => {
+    //             // Regenerated build.ninja; start over.
+    //             tasks_finished = n;
+    //             state = trace::scope("load::read", || load::read(&build_filename))?;
+    //             work = work::Work::new(
+    //                 state.graph,
+    //                 state.hashes,
+    //                 state.db,
+    //                 &options,
+    //                 progress,
+    //                 state.pools,
+    //             );
+    //             build_file_target = work.lookup(&build_filename);
+    //         }
+    //     }
+    // }
 
-    if !targets.is_empty() {
-        for name in &targets {
-            let target = work
-                .lookup(name)
-                .ok_or_else(|| anyhow::anyhow!("unknown path requested: {:?}", name))?;
-            if let Some(build_file_target) = build_file_target.as_ref() {
-                if std::ptr::eq(build_file_target.as_ref(), target.as_ref()) {
-                    // Already built above.
-                    continue;
-                }
-            }
-            work.want_file(target)?;
-        }
-    } else if !state.default.is_empty() {
-        for target in state.default {
-            work.want_file(target)?;
-        }
-    } else {
-        work.want_every_file(build_file_target)?;
-    }
+    // if !targets.is_empty() {
+    //     for name in &targets {
+    //         let target = work
+    //             .lookup(name)
+    //             .ok_or_else(|| anyhow::anyhow!("unknown path requested: {:?}", name))?;
+    //         if let Some(build_file_target) = build_file_target.as_ref() {
+    //             if std::ptr::eq(build_file_target.as_ref(), target.as_ref()) {
+    //                 // Already built above.
+    //                 continue;
+    //             }
+    //         }
+    //         work.want_file(target)?;
+    //     }
+    // } else if !state.default.is_empty() {
+    //     for target in state.default {
+    //         work.want_file(target)?;
+    //     }
+    // } else {
+    //     work.want_every_file(build_file_target)?;
+    // }
 
-    let tasks = trace::scope("work.run", || work.run())?;
+    // let tasks = trace::scope("work.run", || work.run())?;
 
-    // Important! Deallocating all the builds and files stored in the work
-    // object actually takes a considerable amount of time (>1 second on an
-    // AOSP build), so instead, leak the memory. This means that none of the
-    // Drop implementations will be called for work or anything inside of it,
-    // so we need to be sure to we don't put anything important in the Drop
-    // implementations. std::mem::forget used to be an unsafe api, and should
-    // be treated as such.
-    std::mem::forget(work);
+    // // Important! Deallocating all the builds and files stored in the work
+    // // object actually takes a considerable amount of time (>1 second on an
+    // // AOSP build), so instead, leak the memory. This means that none of the
+    // // Drop implementations will be called for work or anything inside of it,
+    // // so we need to be sure to we don't put anything important in the Drop
+    // // implementations. std::mem::forget used to be an unsafe api, and should
+    // // be treated as such.
+    // std::mem::forget(work);
 
     // Include any tasks from initial build in final count of steps.
-    Ok(tasks.map(|n| n + tasks_finished))
+    //Ok(tasks.map(|n| n + tasks_finished))
+    Ok(Some(0))
 }
 
 fn default_parallelism() -> anyhow::Result<usize> {

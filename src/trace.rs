@@ -111,12 +111,7 @@ pub fn if_enabled(f: impl FnOnce(&mut Trace)) {
 #[inline]
 pub fn scope<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
     // Safety: accessing global mut, not threadsafe.
-    unsafe {
-        match &mut TRACE {
-            None => f(),
-            Some(t) => t.scope(name, f),
-        }
-    }
+    f()
 }
 
 pub fn close() {

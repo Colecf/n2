@@ -4,7 +4,7 @@ use crate::{
     canon::canon_path,
     densemap::Index,
     eval::{EvalPart, EvalString},
-    file_pool::FilePool,
+    file_pool::FilePoolNoMmap,
     graph::{BuildId, FileId, Graph, RspFile},
     parse::{Build, DefaultStmt, IncludeOrSubninja, Rule, Statement, VariableAssignment},
     scanner,
@@ -13,7 +13,6 @@ use crate::{
     {db, eval, graph, parse, trace},
 };
 use anyhow::{anyhow, bail};
-use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::{
     borrow::Cow,
@@ -273,10 +272,9 @@ struct SubninjaResults<'text> {
 fn subninja<'thread, 'text>(
     num_threads: usize,
     files: &'thread Files,
-    file_pool: &'text FilePool,
+    file_pool: &'text FilePoolNoMmap,
     path: String,
     parent_scope: Option<ParentScopeReference<'text>>,
-    executor: &rayon::Scope<'thread>,
 ) -> anyhow::Result<SubninjaResults<'text>>
 where
     'text: 'thread,
@@ -301,13 +299,12 @@ where
             file_pool,
             file_pool.read_file(&path)?,
             &mut scope,
-            executor,
         )
     })?;
     let scope = Arc::new(scope);
     let mut subninja_results = parse_results
         .subninjas
-        .into_par_iter()
+        .into_iter()
         .map(|sn| {
             let file = canon_path(sn.file.evaluate(&[], &scope, sn.scope_position));
             subninja(
@@ -316,7 +313,6 @@ where
                 file_pool,
                 file,
                 Some(ParentScopeReference(scope.clone(), sn.scope_position)),
-                executor,
             )
         })
         .collect::<anyhow::Result<Vec<SubninjaResults>>>()?;
@@ -327,7 +323,7 @@ where
     let builds = parse_results.builds;
     results.builds = trace::scope("add builds", || {
         builds
-            .into_par_iter()
+            .into_iter()
             .map(|build| add_build(files, &filename, &scope, build))
             .collect::<anyhow::Result<Vec<graph::Build>>>()
     })?;
@@ -349,14 +345,14 @@ where
         }
     }
 
-    results.builds.par_extend(
+    results.builds.extend(
         subninja_results
-            .par_iter_mut()
+            .iter_mut()
             .flat_map(|x| std::mem::take(&mut x.builds)),
     );
-    results.defaults.par_extend(
+    results.defaults.extend(
         subninja_results
-            .par_iter_mut()
+            .iter_mut()
             .flat_map(|x| std::mem::take(&mut x.defaults)),
     );
     for new_results in subninja_results {
@@ -370,10 +366,9 @@ where
 
 fn include<'thread, 'text>(
     num_threads: usize,
-    file_pool: &'text FilePool,
+    file_pool: &'text FilePoolNoMmap,
     path: String,
     scope: &mut Scope<'text>,
-    executor: &rayon::Scope<'thread>,
 ) -> anyhow::Result<ParseResults<'text>>
 where
     'text: 'thread,
@@ -384,7 +379,6 @@ where
         file_pool,
         file_pool.read_file(&path)?,
         scope,
-        executor,
     )
 }
 
@@ -422,10 +416,9 @@ impl<'text> ParseResults<'text> {
 
 fn parse<'thread, 'text>(
     num_threads: usize,
-    file_pool: &'text FilePool,
+    file_pool: &'text FilePoolNoMmap,
     bytes: &'text [u8],
     scope: &mut Scope<'text>,
-    executor: &rayon::Scope<'thread>,
 ) -> anyhow::Result<ParseResults<'text>>
 where
     'text: 'thread,
@@ -433,7 +426,7 @@ where
     let chunks = parse::split_manifest_into_chunks(bytes, num_threads);
 
     let receivers = chunks
-        .into_par_iter()
+        .into_iter()
         .map(|chunk| {
             let mut parser = parse::Parser::new(chunk);
             parser.read_all()
@@ -449,7 +442,7 @@ where
 
     results.builds.reserve(
         receivers
-            .par_iter()
+            .iter()
             .flatten()
             .map(|x| match x {
                 Statement::Build(_) => 1,
@@ -471,7 +464,7 @@ where
             }
             Statement::Include(i) => trace::scope("include", || -> anyhow::Result<()> {
                 let evaluated = canon_path(i.file.evaluate(&[], &scope, i.scope_position));
-                let new_results = include(num_threads, file_pool, evaluated, scope, executor)?;
+                let new_results = include(num_threads, file_pool, evaluated, scope)?;
                 results.merge(new_results)?;
                 Ok(())
             })?,
@@ -513,62 +506,45 @@ pub struct State {
 }
 
 /// Load build.ninja/.n2_db and return the loaded build graph and state.
-pub fn read(build_filename: &str) -> anyhow::Result<State> {
+pub fn read(build_filename: &str) {
     let build_filename = canon_path(build_filename);
-    let file_pool = FilePool::new();
+    let file_pool = FilePoolNoMmap::new();
     let files = Files::new();
-    let num_threads = available_parallelism()?.get();
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(num_threads)
-        .build()?;
-    let SubninjaResults {
-        builds,
-        defaults,
-        builddir,
-        pools,
-    } = trace::scope("loader.read_file", || -> anyhow::Result<SubninjaResults> {
-        pool.scope(|executor: &rayon::Scope| {
-            let mut results = subninja(
-                num_threads,
-                &files,
-                &file_pool,
-                build_filename,
-                None,
-                executor,
-            )?;
-            trace::scope("sort builds", || {
-                results.builds.par_sort_unstable_by_key(|b| b.id.index())
-            });
-            Ok(results)
-        })
-    })?;
-    drop(pool);
-    let mut graph = trace::scope("loader.from_uninitialized_builds_and_files", || {
-        Graph::from_uninitialized_builds_and_files(builds, files.into_maps())
-    })?;
-    let mut hashes = graph::Hashes::default();
-    let db = trace::scope("db::open", || {
-        let mut db_path = PathBuf::from(".n2_db");
-        if let Some(builddir) = &builddir {
-            db_path = Path::new(&builddir).join(db_path);
-            if let Some(parent) = db_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-        };
-        db::open(&db_path, &mut graph, &mut hashes)
-    })
-    .map_err(|err| anyhow!("load .n2_db: {}", err))?;
+    let num_threads = 5; //available_parallelism()?.get();
+    let mut results = subninja(
+        num_threads,
+        &files,
+        &file_pool,
+        build_filename,
+        None,
+    ).unwrap();
+    results.builds.sort_unstable_by_key(|b| b.id.index())
+    // let mut graph = trace::scope("loader.from_uninitialized_builds_and_files", || {
+    //     Graph::from_uninitialized_builds_and_files(builds, files.into_maps())
+    // }).unwrap();
+    // let mut hashes = graph::Hashes::default();
+    // let db = trace::scope("db::open", || {
+    //     let mut db_path = PathBuf::from(".n2_db");
+    //     if let Some(builddir) = &builddir {
+    //         db_path = Path::new(&builddir).join(db_path);
+    //         if let Some(parent) = db_path.parent() {
+    //             std::fs::create_dir_all(parent)?;
+    //         }
+    //     };
+    //     db::open(&db_path, &mut graph, &mut hashes)
+    // })
+    // .map_err(|err| anyhow!("load .n2_db: {}", err))?;
 
-    let mut owned_pools = SmallMap::with_capacity(pools.len());
-    for pool in pools.iter() {
-        owned_pools.insert(pool.0.to_owned(), pool.1);
-    }
+    // let mut owned_pools = SmallMap::with_capacity(pools.len());
+    // for pool in pools.iter() {
+    //     owned_pools.insert(pool.0.to_owned(), pool.1);
+    // }
 
-    Ok(State {
-        graph,
-        db,
-        hashes,
-        default: defaults,
-        pools: owned_pools,
-    })
+    // Ok(State {
+    //     graph,
+    //     db,
+    //     hashes,
+    //     default: defaults,
+    //     pools: owned_pools,
+    // })
 }
