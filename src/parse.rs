@@ -122,9 +122,6 @@ pub enum Statement<'text> {
 pub struct Parser<'text> {
     scanner: Scanner<'text>,
     buf_len: usize,
-    /// Reading EvalStrings is very hot when parsing, so we always read into
-    /// this buffer and then clone it afterwards.
-    eval_buf: Vec<EvalPart<&'text str>>,
 }
 
 impl<'text> Parser<'text> {
@@ -132,7 +129,6 @@ impl<'text> Parser<'text> {
         Parser {
             scanner: Scanner::new(buf),
             buf_len: buf.len(),
-            eval_buf: Vec::with_capacity(16),
         }
     }
 
@@ -224,7 +220,7 @@ impl<'text> Parser<'text> {
         if self.scanner.peek_newline() {
             self.scanner.skip('\r');
             self.scanner.expect('\n')?;
-            return Ok(EvalString::new(Vec::new()));
+            return Ok(EvalString::new(""));
         }
         let result = self.read_eval(false);
         self.scanner.skip('\r');
@@ -429,8 +425,9 @@ impl<'text> Parser<'text> {
     /// stop_at_path_separators is set, without consuming the character that
     /// caused it to stop.
     fn read_eval(&mut self, stop_at_path_separators: bool) -> ParseResult<EvalString<&'text str>> {
-        self.eval_buf.clear();
+        let start = self.scanner.ofs;
         let mut ofs = self.scanner.ofs;
+        let mut found_content = false;
         // This match block is copied twice, with the only difference being the check for
         // spaces, colons, and pipes in the stop_at_path_separators version. We could remove the
         // duplication by adding a match branch like `' ' | ':' | '|' if stop_at_path_separators =>`
@@ -450,13 +447,8 @@ impl<'text> Parser<'text> {
                         break self.scanner.ofs;
                     }
                     '$' => {
-                        let end = self.scanner.ofs - 1;
-                        if end > ofs {
-                            self.eval_buf
-                                .push(EvalPart::Literal(self.scanner.slice(ofs, end)));
-                        }
-                        let escape = self.read_escape()?;
-                        self.eval_buf.push(escape);
+                        self.read_escape()?;
+                        found_content = true;
                         ofs = self.scanner.ofs;
                     }
                     _ => {}
@@ -475,13 +467,8 @@ impl<'text> Parser<'text> {
                         break self.scanner.ofs;
                     }
                     '$' => {
-                        let end = self.scanner.ofs - 1;
-                        if end > ofs {
-                            self.eval_buf
-                                .push(EvalPart::Literal(self.scanner.slice(ofs, end)));
-                        }
-                        let escape = self.read_escape()?;
-                        self.eval_buf.push(escape);
+                        self.read_escape()?;
+                        found_content = true;
                         ofs = self.scanner.ofs;
                     }
                     _ => {}
@@ -489,13 +476,12 @@ impl<'text> Parser<'text> {
             }
         };
         if end > ofs {
-            self.eval_buf
-                .push(EvalPart::Literal(self.scanner.slice(ofs, end)));
+            found_content = true;
         }
-        if self.eval_buf.is_empty() {
+        if !found_content {
             return self.scanner.parse_error(format!("Expected a string"));
         }
-        Ok(EvalString::new(self.eval_buf.clone()))
+        Ok(EvalString::new(self.scanner.slice(start, end)))
     }
 
     /// Read a variable name as found after a '$' in an eval.
@@ -503,7 +489,7 @@ impl<'text> Parser<'text> {
     /// period allowed(!), I guess because we expect things like
     ///   foo = $bar.d
     /// to parse as a reference to $bar.
-    fn read_simple_varname(&mut self) -> ParseResult<&'text str> {
+    fn read_simple_varname(&mut self) -> ParseResult<()> {
         let start = self.scanner.ofs;
         while matches!(self.scanner.read(), 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-') {}
         self.scanner.back();
@@ -511,21 +497,17 @@ impl<'text> Parser<'text> {
         if end == start {
             return self.scanner.parse_error("failed to scan variable name");
         }
-        Ok(self.scanner.slice(start, end))
+        Ok(())
     }
 
     /// Read and interpret the text following a '$' escape character.
-    fn read_escape(&mut self) -> ParseResult<EvalPart<&'text str>> {
+    fn read_escape(&mut self) -> ParseResult<()> {
         Ok(match self.scanner.read() {
             '\n' | '\r' => {
                 self.scanner.skip_spaces();
-                EvalPart::Literal(self.scanner.slice(0, 0))
             }
-            ' ' | '$' | ':' => {
-                EvalPart::Literal(self.scanner.slice(self.scanner.ofs - 1, self.scanner.ofs))
-            }
+            ' ' | '$' | ':' => (),
             '{' => {
-                let start = self.scanner.ofs;
                 loop {
                     match self.scanner.read() {
                         '\0' => return self.scanner.parse_error("unexpected EOF"),
@@ -533,14 +515,11 @@ impl<'text> Parser<'text> {
                         _ => {}
                     }
                 }
-                let end = self.scanner.ofs - 1;
-                EvalPart::VarRef(self.scanner.slice(start, end))
             }
             _ => {
                 // '$' followed by some other text.
                 self.scanner.back();
-                let var = self.read_simple_varname()?;
-                EvalPart::VarRef(var)
+                self.read_simple_varname()?;
             }
         })
     }
@@ -609,6 +588,85 @@ fn find_start_of_next_manifest_chunk(buf: &[u8], prospective_start: usize) -> us
         {
             return idx;
         }
+    }
+}
+
+struct EvalParser<'a> {
+    buf: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> EvalParser<'a> {
+    fn peek(&self) -> u8 {
+        unsafe { *self.buf.get_unchecked(self.offset) }
+    }
+    fn read(&mut self) -> u8 {
+        let c = self.peek();
+        self.offset += 1;
+        c
+    }
+    fn slice(&self, start: usize, end: usize) -> &'a str {
+        unsafe { std::str::from_utf8_unchecked(self.buf.get_unchecked(start..end)) }
+    }
+}
+
+impl<'a> Iterator for EvalParser<'a> {
+    type Item = EvalPart<&'a str>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut start = self.offset;
+        while self.offset < self.buf.len() {
+            match self.peek() {
+                b'$' => {
+                    if self.offset > start {
+                        return Some(EvalPart::Literal(self.slice(start, self.offset)))
+                    }
+                    self.offset += 1;
+                    match self.peek() {
+                        b'\n' | b'\r' => {
+                            self.offset += 1;
+                            while self.offset < self.buf.len() && self.peek() == b' ' {
+                                self.offset += 1;
+                            }
+                            start = self.offset;
+                        }
+                        b' ' | b'$' | b':' => {
+                            start = self.offset;
+                            self.offset += 1;
+                        }
+                        b'{' => {
+                            self.offset += 1;
+                            start = self.offset;
+                            while self.read() != b'}' {}
+                            let end = self.offset - 1;
+                            return Some(EvalPart::VarRef(self.slice(start, end)));
+                        }
+                        _ => {
+                            // '$' followed by some other text.
+                            start = self.offset;
+                            while self.offset < self.buf.len() && matches!(self.peek(), b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-') {
+                                self.offset += 1;
+                            }
+                            return Some(EvalPart::VarRef(self.slice(start, self.offset)))
+                        }
+                    }
+                }
+                _ => self.offset += 1,
+            }
+        }
+        if self.offset > start {
+            return Some(EvalPart::Literal(self.slice(start, self.offset)))
+        }
+        None
+    }
+}
+
+// Returns an iterator over teh EvalParts in the given string. Note that the
+// string must be a valid EvalString, or undefined behavior will occur.
+pub fn parse_eval(buf: &str) -> impl Iterator<Item = EvalPart<&str>> {
+    return EvalParser {
+        buf: buf.as_bytes(),
+        offset: 0,
     }
 }
 

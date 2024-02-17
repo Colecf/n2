@@ -37,7 +37,8 @@ struct BuildImplicitVars<'a> {
 impl<'text> eval::Env for BuildImplicitVars<'text> {
     fn get_var(&self, var: &str) -> Option<EvalString<Cow<str>>> {
         let string_to_evalstring =
-            |s: String| Some(EvalString::new(vec![EvalPart::Literal(Cow::Owned(s))]));
+            |s: String| Some(EvalString::new(Cow::Owned(s)));
+        // TODO: Have to escape the $s in these strings
         match var {
             "in" => string_to_evalstring(self.explicit_ins.join(" ")),
             "in_newline" => string_to_evalstring(self.explicit_ins.join("\n")),
@@ -432,13 +433,13 @@ where
 {
     let chunks = parse::split_manifest_into_chunks(bytes, num_threads);
 
-    let receivers = chunks
+    let receivers = trace::scope("actual parsing", || chunks
         .into_par_iter()
         .map(|chunk| {
             let mut parser = parse::Parser::new(chunk);
             parser.read_all()
         })
-        .collect::<ParseResult<Vec<Vec<Statement>>>>();
+        .collect::<ParseResult<Vec<Vec<Statement>>>>());
 
     let Ok(receivers) = receivers else {
         // TODO: Call format_parse_error
